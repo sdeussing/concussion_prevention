@@ -1,0 +1,305 @@
+---
+title: "Concussion_Analysis"
+author: "Sarah Deussing"
+date: "2024-07-25"
+output: html_document
+---
+
+## Introduction
+
+The purpose of this analysis is to determine factors that increase the likelihood of an NFL player being concussed.
+
+Dataset: NFL Concussions
+Concussions in the NFL for 3 seasons: 2012/13, 2013/14, 2014/15.
+
+The sports analytics field continues to grow, and with an increase in competitive nature comes the desire to have some sort of advantage. More teams at the professional and collegiate levels are creating and developing their sport performance departments, knowledge, and technologies. A big part of sports performance analytics, however, is within one’s own team: injury prevention. Understanding why certain athletes become injured and pre-identifying athletes most likely to be hurt can give a team a competitive advantage. For this reason, I chose to dive into injury prevention and analytics in my analysis.
+
+Typically, injury prevention analysis would focus on workload, running, jumping, and other metrics taken by one’s own team. However, without access to such data, I decided to determine more outward-facing measures that make an individual more likely to be injured. I worked with a dataset of National Football League data across three seasons: 2012/13, 2013/14, and 2014/15. The dataset listed all concussions from NFL athletes across these three periods, detailing the player name, week of injury, team, and opponent in the game during which the injury occurred. I hoped to determine factors that made an individual more likely to be concussed. 
+
+Within such analysis, I understand that there are certain limitations in the realm of injury prevention. First, I am looking at past data - therefore, it is difficult to know how applicable my findings are to current NFL athletes and teams. Second, analysis of past results does not prevent these individuals from becoming injured, as is the goal of injury prevention analytics. Nevertheless, I had several statistically significant findings throughout my analysis that I am excited to share below.
+
+First, let's load in the data.
+```{r}
+library(stringr)
+library(dplyr)
+concussions <- read.csv("~/Downloads/Concussion Injuries 2012-2014.csv")
+
+# replace . with _
+names(concussions) <-  gsub(x = names(concussions), pattern = "\\.", replacement = "_")  
+glimpse(concussions)
+```
+
+## Plot of Concussions over Time
+
+Let's begin with plotting the number of concussions over time to see if the data takes on any trends.
+```{r}
+library(ggplot2)
+library(dplyr)
+# count the number of injuries per week
+week_cnt <- concussions %>% 
+  group_by(Week_of_Injury) %>%
+  summarize(Count = n())
+
+ggplot(week_cnt, aes(Week_of_Injury,Count)) + geom_point() + geom_line() +
+  ggtitle('Concussions Over Season') + theme_minimal() + ylab('# Concussions')
+```
+
+There seems to be a downward trend over time, so let's analyze the probabilities/odds of being injured over as the season goes on.
+
+## Poisson Model of Concussions over Time
+
+This dataset only includes cases in which there was concussions; therefore, a poisson model is the best option because there is no limit for the number of successes (concussions) possible. Using a binomial distribution would limit successes to those in the dataset, and requires having non-successes in the data as well.
+
+```{r}
+library(sjPlot)
+concussion_model <- glm(Count ~ Week_of_Injury,
+                       data = week_cnt,
+                       family = poisson)
+summary(concussion_model)
+plot_model(concussion_model, type = "pred")
+exp(concussion_model$coefficients)
+```
+
+This model is statistically significant. The odds of a concussion decreases by 1-0.95 = 0.05 (5%) each week.
+
+However, this is limited to aggregated data values. Let's further divide this data by position to create more data points, and bring in only the columns needed for analysis.
+```{r}
+counts <- concussions %>%
+  group_by(Position, Week_of_Injury) %>%
+  summarize(Count = n(),
+            Week = Week_of_Injury,
+            Opponent = Opposing_Team,
+            Team = Team)
+```
+
+We will use this dataset for the remainder of our analysis.
+
+## Predicting Concussions Over Time: Standard Linear Models
+
+Let's begin with a simpler model: a standard linear model.
+A standard linear model has the assumption that our data follows a typical gaussian (normal) distribution. This fit assumes that our value of count of concussions can take on any number (because it is a continuous function). In this case, we believe that a poisson fit might be better for two reasons: (1) it is limited to a discrete number of events, which would be the counts within the dataset, and (2) the probability for observing negative events is 0 (in our dataset, this would mean a zero probability of having negative concussions observed, which makes logical sense).
+
+However, we will begin with the standard linear model anyway.
+
+Starting with this standard linear model, we can predict concussions by week.
+```{r}
+slim <- lm(Count ~ Week, data = counts)
+summary(slim)
+
+plot(counts$Week, counts$Count, col = "blue",
+     main = "Linear Model of # Concussions",
+     abline(slim), cex = 1.3, pch = 16,
+     xlab = "Week", ylab = "# Concussions")
+```
+
+This model is statistically significant, but is does NOT have a strong r-squared value (only 0.12). The negative slope shows a decrease in the number of concussions per week. This low r-squared value within the model indicates the presence of a relationship between the week number and count of concussions; however, the value indicates that another model might produce a better fit.
+
+## Generalized Linear Model (Poisson Model)
+
+Like before, we will run another poisson model as we did with our original dataset. For this model, we will use our 'counts' dataset for analysis.
+```{r}
+concussion_model2 <- glm(Count ~ Week,
+                       data = counts,
+                       family = poisson)
+summary(concussion_model2)
+plot_model(concussion_model2, type = "pred")
+exp(concussion_model$coefficients)
+```
+
+This model is also statistically significant - and we see lower residuals in this plot than the last one using our aggregated dataset. For each week, we see a decrease of 5% in the odds of being concussed. 
+
+Of the models we have run thus far (the standard linear vs. generalized linear models), all of these models were statistically significant. Therefore, we can move forward in our modeling with confidence that the models below will also produce significant results. 
+
+The models above encompass different assumptions and lack the practical knowledge that each entry (datapoint) cannot be treated the same. Different positions have different roles within a team/game - it is likely that, as a result, different positions have varying likelihoods of being concussed across a season. This understanding led to the next part of my analysis: mixed effects models.
+
+## Predicting Concussions Over Time by Position (Mixed Effects Models)
+
+First, let's look at mixed effects from different positions.
+```{r}
+library(lme4)
+concussion_model_pos <- glmer(Count ~ Week + (1 | Position),
+                       data = counts,
+                       family = poisson)
+summary(concussion_model_pos)
+performance::r2(concussion_model_pos)
+
+plot_model(concussion_model_pos, type = "re")
+
+
+random_effects <- ranef(concussion_model_pos)
+ranef_df <- data.frame(
+  Intercept = random_effects$Position$`(Intercept)`,
+  Position = rownames(random_effects$Position)
+)
+
+ggplot(ranef_df, aes(Intercept, Position)) + geom_point() + theme_minimal()
+```
+
+This model is statistically significant, meaning that we can conclude a different slope/intercept (line) for each position. The higher conditional r-squared value (0.451) indicates that inclusion of different positions makes for a better fit than grouping all positions.
+
+This model shows that wide receivers, safeties, and cornerbacks had the highest initial intercept for odds of a concussion. Intuitively, these positions are the ones making the most running movements and are tackling/getting tackled. On the other hand, the lowest intercepts belong to centers and defensive tackles - the positions having the lowest running movements in a typical game.
+
+Our model reveals that players making the greatest lateral movements have a higher probability of being concussed. This analysis directly supports the current changes being made by the NFL. The league is implementing a new rule for kickoffs that decreases player running movement. Kickoffs are typically when players are running the farthest, and this rule change has been implemented to increase player safety and decrease the number of injuries/concussions. 
+
+This leads to various practical implications for NFL teams. Wide receivers, safeties, and cornerbacks should receive the most watch, testing, and training to prevent concussions throughout a season.
+
+Let's also look at a density plot of concussions for positions.
+```{r}
+library(ggplot2)
+library(ggridges)
+
+ggplot(data=counts, aes(x=Count, y = Position)) +
+  geom_density_ridges(fill='lightblue') + 
+  ggtitle('Concussions By Position') +
+  theme_minimal()
+```
+
+This plot shows the number of concussions per week, divided into the different positions.
+
+
+We have wide receivers with the highest intercept within the dataset (in terms of count of concussions). Let's see if there is a significant difference in concussion count between wide receivers and all other positions. We will do this with a t-test.
+
+H0: There is no difference in number of concussions for wide receivers and other positions.
+HA: The number of concussions is higher for a wide receivers.
+```{r}
+wr_data <- counts
+wr_data$WR <- ifelse(
+  stringr::str_detect(wr_data$Position, "Wide Receiver"),
+  1,
+  0
+)
+t.test(Count ~ WR, data=wr_data)
+```
+
+This is statistically significant - there is a difference in the count of concussions for wide receivers compared to all other positions. This t-test does not analyze this data per week - in that way, it is just analyzing the aggregate number of concussions for all positions. This conclusion reinforces the mixed effects model above that wide receivers should receive the most attention in terms of concussion prevention.
+
+
+The following mixed effects models had less of a practical implication than the position model and were for more exploratory analysis. In the same way we created a mixed effects model for the different position types, we create models for opponent and home team below. Because the players and overall strength of a team changes from season to season, these models may not be great in the injury prevention realm, however, they provide interesting results.
+
+## Predicting Concussions Over Time by Opposing Team
+Now, let's look to see whether opposing team makes a difference in our modeling.
+```{r}
+concussion_model_opp <- glmer(Count ~ Week + (1 | Opponent),
+                       data = counts,
+                       family = poisson)
+summary(concussion_model_opp)
+performance::r2(concussion_model_opp)
+
+plot_model(concussion_model_opp, type = "re")
+
+ran_effects <- ranef(concussion_model_opp)
+ranef_df1 <- data.frame(
+  int = ran_effects$Opponent$`(Intercept)`,
+  opponent = rownames(ran_effects$Opponent)
+)
+
+ranef_df1 <- ranef_df1 %>%
+  arrange(int)
+
+high_low1 <- rbind(head(ranef_df1, 3), tail(ranef_df1, 3))
+ggplot(high_low1, aes(int, opponent)) + geom_point(size=3) + theme_minimal()
+```
+
+We see that this model is statistically significant, meaning that we can conclude a difference in the probability of being concussed when playing different opponents. We also see a better conditional r-squared than marginal, meaning that the addition of opposing team makes for a better model. However, we are looking at a low r-squared value, meaning that relying upon opponent team does not make for the best analysis for our data. The conditional r-squared is only 0.212, is less than the conditional r-squared for our position model (0.451), meaning that the position model would be a better choice if implementing one for practical results.
+
+From the model, we learn that the teams with the highest/lowest intercepts are:
+Highest teams: Eagles, Patriots, Cowboys
+Lowest teams: Colts, Seahawks, Titans
+
+The count of concussions with these as the opponent team implies that these teams had strong defenses that were tackling hard/rough. One can further imply that as a result, the teams at the top of our list would win the most games.
+
+The NFL standings across these 3 seasons seem to reflect our conclusions. In all three years, the Patriots at/near the top of the rankings. In 2014, the Cowboys are ranked first, and the Patriots won a championship in 2013 and 2015. The question that remains is that of the Seahawks - this team has one of the lowest intercepts in terms of (giving) concussions, yet they played in the championship game in 2014. 
+
+Let's visualize the number of concussions when facing these teams with a density plot:
+```{r}
+library(ggplot2)
+library(ggridges)
+
+counts %>%
+  filter(Opponent == 'Philadelphia Eagles'
+         | Opponent == 'New England Patriots'
+         | Opponent == 'Dallas Cowboys'
+         | Opponent == 'Indianapolis Colts'
+         | Opponent == 'SeattleSeahawks'
+         | Opponent == 'Tennessee Titans') %>%
+  ggplot(aes(x=Count, y = Opponent)) +
+  geom_density_ridges(fill='lightblue') + 
+  ggtitle('Concussions Caused by Opponent Teams') +
+  theme_minimal()
+```
+
+
+## Predicting Concussions Over Time by Team
+Now, let's look to see whether home team makes a difference in our modeling.
+```{r}
+concussion_model_team <- glmer(Count ~ Week + (1 | Team),
+                       data = counts,
+                       family = poisson)
+summary(concussion_model_team)
+performance::r2(concussion_model_team)
+
+plot_model(concussion_model_team, type = "re")
+
+ran_effects <- ranef(concussion_model_team)
+ranef_df1 <- data.frame(
+  int = ran_effects$Team$`(Intercept)`,
+  team = rownames(ran_effects$Team)
+)
+
+ranef_df1 <- ranef_df1 %>%
+  arrange(int)
+
+high_low1 <- rbind(head(ranef_df1, 3), tail(ranef_df1, 3))
+ggplot(high_low1, aes(int, team)) + geom_point(size=3) + theme_minimal()
+```
+
+This model is also statistically significant.
+
+We have the Chargers, Jets, and Cardinals with the highest intercepts in the dataset. Except for when the Chargers were ranked in the bottom 3 during the 2015 regular season, we see these teams in towards the middle of the rankings from 2012-2015. This implies that using a teams models to analyze/predict the number of concussions would not be ideal. Our analysis emphasizes this point with a conditional r-squared value of only 0.217.
+
+
+## Model Comparison (Mixed Effects)
+To support our analysis between the different models, we will use 'anova.'
+```{r}
+anova(concussion_model_pos, concussion_model_opp, concussion_model_team)
+```
+There are several criteria from this test that reveal that our position model is the best option in terms of fit and prediction.
+
+1. AIC: a lower AIC value indicates a better fit to the data - our position model has the lowest AIC.
+2. BIC: a lower BIC value also indicates a better fit - our position model has the lowest BIC.
+3. Deviance: a lower deviance value means a more 'good' fit - once again, our position model has the lowest deviance.
+
+These statistics confirm that, if selecting one model to analysis the number of concussions over time based on our dataset, the position model would serve as the best fit.
+
+## Home vs. Away
+
+We now want to determine whether there is a difference between the number of concussions at home vs. away games.
+
+H0: There is no difference in number of concussions for home and away locations.
+HA: The number of concussions is higher for a team when at home (vs. away).
+```{r}
+loc <- concussions
+loc$location <- word(loc$Game, 1)
+loc$homeTeam <- word(loc$Team, 1)
+
+loc$home <- ifelse(
+  loc$homeTeam == loc$location,
+  1,
+  0
+)
+loc <- loc %>%
+  group_by(Position, Week_of_Injury, home) %>%
+  summarize(Count = n())
+
+t.test(Count ~ home, data=loc)
+
+```
+
+Our p-value is greater than 0.05, and our t-value is not greater than 1.96, meaning that there is no statistical significance in this t-test. Therefore, we cannot reject the null hypothesis that there is no difference between the number of concussions for home vs. away games. We can therefore conclude that location is not a factor in predicting and analyzing concussions.
+
+## Conclusion
+
+Both the opponent and home team models would not be extremely useful in injury prevention field in the typical sense. Both focus on all teams within the NFL, while in reality, a sports performance department within one team would only want to focus on players within that team. Our position model most aligns with practical implications in this way. This model also was the best fit in terms of concussion prediction, compared to the opponent and team models. Additionally, the position model could be used for future injury prevention by focusing on the positions with the highest intercepts, while the other two models are not as important for forward-looking injury prevention. However, understanding the opponent team with the highest intercept could assist with injury readiness when facing that opponent.
+
+Overall, we have found several different factors that increase/decrease the odds of being concussed over the season. Diving into workload data within a team would (most likely) produce more useful results, however, this analysis was an interesting introduction to the field of sports injury prevention and the practicality of many of the models learned in this class.
+
